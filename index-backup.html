@@ -1,0 +1,402 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Binance RSI Scanner</title>
+
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:10px;font-family:Arial,sans-serif;background:linear-gradient(135deg,#050816,#111827,#052e2b);color:white}
+.header{background:linear-gradient(135deg,#2563eb,#7c3aed,#059669);padding:18px;border-radius:16px;margin-bottom:10px}
+.header h1{margin:0;font-size:25px}
+.header p{margin:6px 0 0;color:#dbeafe}
+.controls{background:#111827;padding:10px;border-radius:14px;display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}
+input{padding:9px;border-radius:8px;border:1px solid #475569;background:#1e293b;color:white;font-size:14px}
+button{padding:9px 15px;border:0;border-radius:8px;background:linear-gradient(135deg,#2563eb,#7c3aed);color:white;font-weight:bold;cursor:pointer}
+button:disabled{opacity:.5;cursor:wait}
+.reset-btn{background:linear-gradient(135deg,#dc2626,#f97316)}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.card{padding:11px;border-radius:12px;font-size:13px}
+.card-number{font-size:21px;font-weight:bold;margin-top:3px}
+.blue{background:#1d4ed8}.purple{background:#7c3aed}.green{background:#047857}.orange{background:#b45309}
+.progress{background:#111827;padding:10px;border-radius:12px;margin-bottom:10px}
+.progress-bg{height:8px;background:#334155;border-radius:20px;overflow:hidden;margin-top:6px}
+.progress-bar{height:100%;width:0%;background:linear-gradient(90deg,#22c55e,#06b6d4,#8b5cf6);transition:width .2s}
+.main-layout{display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);gap:10px;align-items:start}
+.coin-panel,.chart-panel{background:#0f172a;border-radius:15px;overflow:hidden;min-width:0}
+.panel-title,.chart-header{padding:12px;background:#1e293b;font-weight:bold;color:#93c5fd}
+.table-scroll{max-height:720px;overflow-y:auto;overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{background:#172033;padding:9px;text-align:left;position:sticky;top:0;z-index:3;font-size:13px}
+td{padding:9px;border-bottom:1px solid #263449;font-size:13px}
+#coinTable tr{cursor:pointer;transition:all .15s ease}
+#coinTable tr.selected-coin{background:#334155!important;outline:2px solid white;outline-offset:-2px;box-shadow:inset 0 0 0 1px white}
+#coinTable tr.selected-coin td{color:white}
+.coin-button{background:none;border:0;padding:0;color:#60a5fa;font-size:13px;font-weight:bold;cursor:pointer}
+.coin-button:hover{color:white;text-decoration:underline}
+.rsi-value{color:#34d399;font-weight:bold}
+#currentSymbol{color:#34d399}
+#tradingview_chart{width:100%;height:720px}
+@media(max-width:900px){
+.main-layout{grid-template-columns:1fr}
+.coin-panel{order:1}.chart-panel{order:2}
+.table-scroll{max-height:430px}
+#tradingview_chart{height:600px}
+}
+@media(max-width:600px){
+body{padding:5px}
+.header h1{font-size:20px}
+.stats{grid-template-columns:repeat(2,1fr)}
+#tradingview_chart{height:550px}
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+<h1>🚀 Binance RSI Scanner</h1>
+<p>1H RSI • Binance Spot USDT</p>
+</div>
+
+<div class="controls">
+<input id="minRSI" type="number" value="30" placeholder="RSI کم">
+<input id="maxRSI" type="number" value="40" placeholder="RSI زیادہ">
+<input id="searchCoin" type="text" placeholder="🔎 Coin تلاش کریں">
+<button id="scanButton" onclick="startScan()">🚀 Scan Coins</button>
+<button class="reset-btn" onclick="resetChart()">🗑️ Reset Chart</button>
+</div>
+
+<div class="stats">
+<div class="card blue">Total Coins<div class="card-number" id="totalCoins">0</div></div>
+<div class="card purple">Scanned<div class="card-number" id="scannedCoins">0</div></div>
+<div class="card green">RSI Coins<div class="card-number" id="signalCoins">0</div></div>
+<div class="card orange">Remaining<div class="card-number" id="remainingCoins">0</div></div>
+</div>
+
+<div class="progress">
+<div id="status">⏸️ Scanner تیار ہے۔ Scan کے لیے بٹن دبائیں۔</div>
+<div class="progress-bg"><div id="progressBar" class="progress-bar"></div></div>
+</div>
+
+<div class="main-layout">
+<div class="coin-panel">
+<div class="panel-title">📋 Coins / RSI</div>
+<div class="table-scroll">
+<table>
+<thead><tr><th>Coin</th><th>RSI</th></tr></thead>
+<tbody id="coinTable"></tbody>
+</table>
+</div>
+</div>
+
+<div class="chart-panel">
+<div class="chart-header">📈 TradingView — <span id="currentSymbol">BTCUSDT</span></div>
+<div id="tradingview_chart"></div>
+</div>
+</div>
+
+<script src="https://s3.tradingview.com/tv.js"></script>
+
+<script>
+"use strict";
+
+/* SETTINGS */
+const RSI_PERIOD = 14;
+const BATCH_SIZE = 40;
+const KLINE_LIMIT = 100;
+
+let scannedCount = 0;
+let signalCount = 0;
+let selectedCoin = null;
+let tvWidget = null;
+let isScanning = false;
+
+/* TRADINGVIEW CHART */
+function createTradingViewChart(symbol) {
+  document.getElementById("currentSymbol").innerText = symbol;
+  document.getElementById("tradingview_chart").innerHTML = "";
+
+  if (typeof TradingView === "undefined") {
+    document.getElementById("tradingview_chart").innerText =
+      "TradingView load نہیں ہوا۔ انٹرنیٹ چیک کریں۔";
+    return;
+  }
+
+  tvWidget = new TradingView.widget({
+    autosize: true,
+    symbol: "BINANCE:" + symbol,
+    interval: "60",
+    timezone: "Asia/Karachi",
+    theme: "dark",
+    style: "1",
+    locale: "en",
+    enable_publishing: false,
+    allow_symbol_change: true,
+    hide_side_toolbar: false,
+    hide_top_toolbar: false,
+    hide_legend: false,
+    withdateranges: true,
+    save_image: true,
+    details: true,
+    hotlist: true,
+    calendar: true,
+    studies: ["RSI@tv-basicstudies"],
+    disabled_features: ["create_volume_indicator_by_default"],
+    container_id: "tradingview_chart"
+  });
+}
+
+/* RESET CHART */
+function resetChart() {
+  const symbol = selectedCoin ||
+    document.getElementById("currentSymbol").innerText ||
+    "BTCUSDT";
+
+  if (tvWidget && typeof tvWidget.remove === "function") {
+    try { tvWidget.remove(); } catch (e) {}
+  }
+
+  tvWidget = null;
+  createTradingViewChart(symbol);
+}
+
+/* RSI CALCULATION */
+function calculateRSI(closes) {
+  const rsi = new Array(closes.length).fill(null);
+
+  if (closes.length <= RSI_PERIOD) return rsi;
+
+  let gain = 0;
+  let loss = 0;
+
+  for (let i = 1; i <= RSI_PERIOD; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) gain += change;
+    else loss += Math.abs(change);
+  }
+
+  let avgGain = gain / RSI_PERIOD;
+  let avgLoss = loss / RSI_PERIOD;
+
+  rsi[RSI_PERIOD] = avgLoss === 0
+    ? 100
+    : 100 - (100 / (1 + avgGain / avgLoss));
+
+  for (let i = RSI_PERIOD + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    const currentGain = change > 0 ? change : 0;
+    const currentLoss = change < 0 ? Math.abs(change) : 0;
+
+    avgGain = ((avgGain * (RSI_PERIOD - 1)) + currentGain) / RSI_PERIOD;
+    avgLoss = ((avgLoss * (RSI_PERIOD - 1)) + currentLoss) / RSI_PERIOD;
+
+    rsi[i] = avgLoss === 0
+      ? 100
+      : 100 - (100 / (1 + avgGain / avgLoss));
+  }
+
+  return rsi;
+}
+
+/* BINANCE KLINES */
+async function getKlines(symbol) {
+  try {
+    const url = "https://api.binance.com/api/v3/klines" +
+      "?symbol=" + encodeURIComponent(symbol) +
+      "&interval=1h&limit=" + KLINE_LIMIT;
+
+    const response = await fetch(url);
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    if (!Array.isArray(data)) return null;
+
+    return data;
+  } catch (error) {
+    return null;
+  }
+}
+
+/* ANALYZE COIN */
+async function analyzeCoin(symbol) {
+  const data = await getKlines(symbol);
+  if (!data || data.length < 30) return null;
+
+  const closes = data.map(c => Number(c[4]));
+  const rsi = calculateRSI(closes);
+  const currentRSI = rsi[rsi.length - 1];
+
+  if (!Number.isFinite(currentRSI)) return null;
+
+  return { symbol, rsi: currentRSI };
+}
+
+/* BINANCE SPOT USDT COINS */
+async function getUSDTCoins() {
+  const response = await fetch(
+    "https://api.binance.com/api/v3/exchangeInfo"
+  );
+
+  if (!response.ok) {
+    throw new Error("Binance data load نہیں ہوا۔ انٹرنیٹ یا Binance API چیک کریں۔");
+  }
+
+  const data = await response.json();
+
+  return data.symbols
+    .filter(x =>
+      x.status === "TRADING" &&
+      x.quoteAsset === "USDT" &&
+      x.isSpotTradingAllowed === true
+    )
+    .map(x => x.symbol);
+}
+
+/* ADD RESULT */
+function addResult(result) {
+  const minRSI = Number(document.getElementById("minRSI").value);
+  const maxRSI = Number(document.getElementById("maxRSI").value);
+
+  if (!Number.isFinite(minRSI) || !Number.isFinite(maxRSI)) return;
+  if (minRSI > maxRSI) return;
+  if (result.rsi < minRSI || result.rsi > maxRSI) return;
+
+  signalCount++;
+
+  const row = document.createElement("tr");
+  if (selectedCoin === result.symbol) row.classList.add("selected-coin");
+
+  const coinCell = document.createElement("td");
+  const coinButton = document.createElement("button");
+  coinButton.className = "coin-button";
+  coinButton.textContent = "📈 " + result.symbol;
+  coinButton.onclick = () => openCoinChart(result.symbol);
+  coinCell.appendChild(coinButton);
+
+  const rsiCell = document.createElement("td");
+  const rsiSpan = document.createElement("span");
+  rsiSpan.className = "rsi-value";
+  rsiSpan.textContent = result.rsi.toFixed(2);
+  rsiCell.appendChild(rsiSpan);
+
+  row.appendChild(coinCell);
+  row.appendChild(rsiCell);
+
+  row.addEventListener("click", event => {
+    if (event.target.tagName !== "BUTTON") openCoinChart(result.symbol);
+  });
+
+  document.getElementById("coinTable").appendChild(row);
+}
+
+/* OPEN COIN CHART */
+function openCoinChart(symbol) {
+  selectedCoin = symbol;
+
+  document.querySelectorAll("#coinTable tr").forEach(row => {
+    row.classList.remove("selected-coin");
+    const button = row.querySelector(".coin-button");
+    if (button && button.textContent.includes(symbol)) {
+      row.classList.add("selected-coin");
+    }
+  });
+
+  createTradingViewChart(symbol);
+}
+
+/* COUNTERS */
+function updateCounters(total) {
+  document.getElementById("totalCoins").innerText = total;
+  document.getElementById("scannedCoins").innerText = scannedCount;
+  document.getElementById("signalCoins").innerText = signalCount;
+  document.getElementById("remainingCoins").innerText =
+    Math.max(total - scannedCount, 0);
+
+  const percent = total > 0 ? (scannedCount / total) * 100 : 0;
+  document.getElementById("progressBar").style.width = percent + "%";
+}
+
+/* MANUAL SCAN ONLY */
+async function startScan() {
+  if (isScanning) return;
+
+  const minRSI = Number(document.getElementById("minRSI").value);
+  const maxRSI = Number(document.getElementById("maxRSI").value);
+
+  if (!Number.isFinite(minRSI) || !Number.isFinite(maxRSI) ||
+      minRSI < 0 || maxRSI > 100 || minRSI > maxRSI) {
+    document.getElementById("status").innerText =
+      "❌ درست RSI حد درج کریں۔ مثال: کم 25 اور زیادہ 40۔";
+    return;
+  }
+
+  isScanning = true;
+  const scanButton = document.getElementById("scanButton");
+  scanButton.disabled = true;
+  scanButton.textContent = "⏳ Scanning...";
+
+  const table = document.getElementById("coinTable");
+  const status = document.getElementById("status");
+
+  table.innerHTML = "";
+  scannedCount = 0;
+  signalCount = 0;
+  updateCounters(0);
+  status.innerText = "⏳ Binance Spot coins لوڈ ہو رہے ہیں...";
+
+  try {
+    const coins = await getUSDTCoins();
+    const total = coins.length;
+    updateCounters(total);
+
+    for (let i = 0; i < total; i += BATCH_SIZE) {
+      const batch = coins.slice(i, i + BATCH_SIZE);
+      const results = await Promise.all(batch.map(symbol => analyzeCoin(symbol)));
+
+      results.forEach(result => {
+        scannedCount++;
+        if (result) addResult(result);
+        updateCounters(total);
+      });
+
+      status.innerText =
+        "⚡ Scan جاری ہے: " + scannedCount + " / " + total +
+        " | " + signalCount + " coins ملے";
+    }
+
+    status.innerText = "✅ Scan مکمل — " + signalCount + " RSI coins ملے۔";
+  } catch (error) {
+    status.innerText = "❌ Error: " + error.message;
+  } finally {
+    isScanning = false;
+    scanButton.disabled = false;
+    scanButton.textContent = "🚀 Scan Coins";
+  }
+}
+
+/* COIN SEARCH */
+document.getElementById("searchCoin").addEventListener("input", function() {
+  const search = this.value.trim().toUpperCase();
+
+  document.querySelectorAll("#coinTable tr").forEach(row => {
+    const coin = row.children[0].innerText.toUpperCase();
+    row.style.display = coin.includes(search) ? "" : "none";
+  });
+});
+
+/* FIRST CHART ONLY — NO AUTOMATIC SCAN */
+createTradingViewChart("BTCUSDT");
+
+/*
+  اہم:
+  یہاں startScan() نہیں چلایا گیا۔
+  یہاں setInterval() نہیں ہے۔
+  اس لیے ویب سائٹ خودکار طور پر Scan نہیں کرے گی۔
+  Scan صرف بٹن دبانے سے ہوگا۔
+*/
+</script>
+
+</body></html>
